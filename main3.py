@@ -60,6 +60,9 @@ class ResizableBox(QGraphicsRectItem):
             self.setRect(rect)
         super().mouseMoveEvent(event)
 
+# Insert this at the top
+SEGMENT_WIDTH = 100  # Adjustable sub-box width
+
 class MainWindow(QtWidgets.QWidget):
     def __init__(self):
         super().__init__()
@@ -78,20 +81,18 @@ class MainWindow(QtWidgets.QWidget):
         self.pbLoadImage = QtWidgets.QPushButton("Load Image Pair (Background then Sample)")
         self.pbLoadImage.clicked.connect(self.loadImage)
 
-        
-
         self.vlayout = QtWidgets.QVBoxLayout()
         self.vlayout.addWidget(self.graphic)
         self.vlayout.addWidget(self.pbLoadImage)
-        
+
         self.pbDone = QtWidgets.QPushButton("Done")
         self.pbDone.clicked.connect(self.recordBoxCoordinates)
         self.vlayout.addWidget(self.pbDone)
 
         self.setLayout(self.vlayout)
         self.current_box = None
+        self.sub_boxes = []
 
-    
     def loadImage(self):
         bg_filename, _ = QtWidgets.QFileDialog.getOpenFileName(self, "Select Background Image")
         if not bg_filename:
@@ -101,7 +102,7 @@ class MainWindow(QtWidgets.QWidget):
         if not sample_filename:
             return
 
-        processed_image_path, x1, y1, box_width, box_height = self.processImage(bg_filename, sample_filename)
+        processed_image_path, main_box, sub_boxes = self.processImage(bg_filename, sample_filename)
 
         if processed_image_path:
             pixmap = QtGui.QPixmap(processed_image_path)
@@ -119,32 +120,76 @@ class MainWindow(QtWidgets.QWidget):
                 self.scene.removeItem(self.current_box)
                 self.current_box = None
 
-
-            self.current_box = ResizableBox(x1, y1, box_width, box_height)
+            # Draw red resizable main box
+            x1, y1, w, h = main_box
+            self.current_box = ResizableBox(x1, y1, w, h)
             self.scene.addItem(self.current_box)
+
+            # # Draw blue sub-boxes
+            # self.sub_boxes = []
+            # for x, y, w, h in sub_boxes:
+            #     box = QGraphicsRectItem(x, y, w, h)
+            #     box.setPen(QPen(Qt.blue, 1))
+            #     self.scene.addItem(box)
+            #     self.sub_boxes.append(box)
 
     def recordBoxCoordinates(self):
         if self.current_box:
+            # Get current red box dimensions
             rect = self.current_box.rect()
             x, y, w, h = rect.x(), rect.y(), rect.width(), rect.height()
-            print("Final Box Coordinates:")
-            print(f"  Top-left:     ({int(x)}, {int(y)})")
-            print(f"  Width:        {int(w)} px")
-            print(f"  Height:       {int(h)} px")
+            print("Original Box:")
+            print(f"  Top-left: ({int(x)}, {int(y)})")
+            print(f"  Width:    {int(w)} px")
+            print(f"  Height:   {int(h)} px")
+
+        # Calculate segment-aligned bounds
+            num_segments = int(np.ceil(w / SEGMENT_WIDTH))
+            new_width = num_segments * SEGMENT_WIDTH
+            pad = new_width - w
+            x1 = x - pad / 2
+            x1 = max(0, min(x1, self.scene.width() - new_width))  # keep within image
+
+            for box in self.sub_boxes:
+                self.scene.removeItem(box)
+            self.sub_boxes.clear()
+
+
+            self.current_box.setRect(x1, y, new_width, h)
+
+ 
+            for i in range(num_segments):
+                xi = x1 + i * SEGMENT_WIDTH
+                box = QGraphicsRectItem(xi, y, SEGMENT_WIDTH, h)
+                box.setPen(QPen(Qt.blue, 1))
+                self.scene.addItem(box)
+                self.sub_boxes.append(box)
+
+            print("Updated (Snapped) Box:")
+            print(f"  Top-left: ({int(x1)}, {int(y)})")
+            print(f"  Width:    {int(new_width)} px")
+            print(f"  Height:   {int(h)} px")
+            print("Sub-Box Coordinates:")
+            for i, box in enumerate(self.sub_boxes):
+                rect = box.rect()
+                x, y, w, h = rect.x(), rect.y(), rect.width(), rect.height()
+                print(f"  Sub-box {i+1}: ({int(x)}, {int(y)}) width={int(w)} height={int(h)}")
+
+
 
     def processImage(self, background_path, sample_path):
         output_path = "difference_box_output.png"
 
         if not os.path.exists(background_path) or not os.path.exists(sample_path):
             print("Error: Image file not found!")
-            return None, 0, 0, 0, 0
+            return None, (0, 0, 0, 0), []
 
         bg_img = cv2.imread(background_path)
         sample_img = cv2.imread(sample_path)
 
         if bg_img is None or sample_img is None:
             print("Error: Unable to load images.")
-            return None, 0, 0, 0, 0
+            return None, (0, 0, 0, 0), []
 
         if bg_img.shape != sample_img.shape:
             sample_img = cv2.resize(sample_img, (bg_img.shape[1], bg_img.shape[0]))
@@ -167,31 +212,30 @@ class MainWindow(QtWidgets.QWidget):
 
         if not contours:
             print("No significant difference found.")
-            return None, 0, 0, 0, 0
+            return None, (0, 0, 0, 0), []
 
         largest_contour = max(contours, key=cv2.contourArea)
         x, y, w, h = cv2.boundingRect(largest_contour)
 
-        padding = 0
-        x1 = max(x - padding, 0)
-        y1 = max(y - padding, 0)
-        x2 = min(x + w + padding, sample_img.shape[1] - 1)
-        y2 = min(y + h + padding, sample_img.shape[0] - 1)
+        # Centered buffer logic
+        num_segments = int(np.ceil(w / SEGMENT_WIDTH))
+        new_width = num_segments * SEGMENT_WIDTH
+        pad = new_width - w
+        x1 = max(x - pad // 2, 0)
+        x1 = min(x1, sample_img.shape[1] - new_width)
+        box_width = new_width
+        box_height = h
 
-        box_width = x2 - x1
-        box_height = y2 - y1
+        # Build sub-boxes
+        sub_boxes = []
+        for i in range(num_segments):
+            xi = x1 + i * SEGMENT_WIDTH
+            sub_boxes.append((xi, y, SEGMENT_WIDTH, h))
 
-        print(f"Sample Bounding Box:")
-        print(f"  Top-left:     ({x1}, {y1})")
-        print(f"  Bottom-right: ({x2}, {y2})")
-        print(f"  Width:        {box_width} px")
-        print(f"  Height:       {box_height} px")
-
-        # Removed drawing of red box onto image
+        # Save image (optional)
         cv2.imwrite(output_path, sample_img)
 
-        return output_path, x1, y1, box_width, box_height
-
+        return output_path, (x1, y, box_width, box_height), sub_boxes
 if __name__ == "__main__":
     app = QtWidgets.QApplication(sys.argv)
     mw = MainWindow()
