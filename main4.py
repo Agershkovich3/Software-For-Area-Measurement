@@ -1,3 +1,9 @@
+# Install:
+#   pip install opencv-python pillow numpy
+#   pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cpu
+#   pip install transformers
+#   pip install git+https://github.com/facebookresearch/segment-anything.git
+#
 import os, sys, time
 os.environ.setdefault("OMP_NUM_THREADS", "1")
 os.environ.setdefault("MKL_NUM_THREADS", "1")
